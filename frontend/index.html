@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Terminal</title>
+<style>
+ body{margin:0;background:#000;color:#fff;font-family:monospace;}
+ #cursor{animation:blink 1s infinite;}
+ @keyframes blink{50%{opacity:0}}
+ #out{white-space:pre-wrap;padding:1rem}
+</style>
+</head>
+<body>
+<div id="out"></div><span id="cursor">_</span>
+<script>
+const out=document.getElementById('cursor');
+function write(text){
+  out.insertAdjacentText('beforebegin',text);
+  out.scrollIntoView();
+}
+const api="https://universal-dispatcher.onrender.com/chat";
+async function send(text){
+  const res=await fetch(api,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text,domain:"psych"})});
+  const j=await res.json();
+  write(j.reply+"\n");
+}
+document.addEventListener("keydown",async (e)=>{
+  if(e.key==="Enter"){
+    const line=document.getElementById("cursor").previousSibling.textContent.trim();
+    write("> "+line+"\n");
+    await send(line);
+  }
+});
+write("Welcome. Start typing and press ENTER.\n")
+</script>
+</body>
+</html>
