@@ -21,6 +21,8 @@ incoming prompt to the appropriate service based on the supplied domain.
 ```
 universal_dispatcher/
 ├── dispatcher.py      # FastAPI app implementing the dispatcher
+├── frontend/          # Static terminal‑style UI for interacting with the dispatcher
+│   └── index.html     # Simple JavaScript/HTML terminal interface
 ├── requirements.txt   # Python dependencies
 ├── Dockerfile         # Container definition for deployment
 └── README.md          # This file
@@ -80,6 +82,24 @@ uses the `PORT` environment variable provided by the platform.
    service is ready.
 4. Deploy using the **Free** instance type (unless your usage requires more
    resources).
+
+## Front‑end
+
+This repository includes a minimal web front‑end under `frontend/index.html`.
+It renders a black “terminal” with a blinking cursor.  Users can type text
+and press `Enter` to send it to the dispatcher, and the response from the
+selected domain is displayed below.  By default the JavaScript points to
+`https://universal-dispatcher.onrender.com/chat`.  When running locally,
+you can change the `api` constant in the file to `http://localhost:8000/chat`.
+
+To serve the front‑end locally you can run a simple static file server from
+the `frontend` directory:
+
+```bash
+python -m http.server 8080 --directory frontend
+```
+
+Then open `http://localhost:8080/index.html` in your browser.
 
 ## Limitations
 

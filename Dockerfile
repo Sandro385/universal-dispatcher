@@ -11,8 +11,12 @@ COPY requirements.txt ./requirements.txt
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+
+# Copy the dispatcher and frontend.  The dispatcher lives at the project
+# root.  The frontend directory contains a simple terminal UI that can
+# be served separately.
 COPY dispatcher.py ./dispatcher.py
+COPY frontend ./frontend
 
 # Expose port 8000 for local testing (Render will override via $PORT)
 EXPOSE 8000
