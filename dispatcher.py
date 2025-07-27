@@ -1,15 +1,91 @@
-# dispatcher.py (entrypoint)
-
 import os
-import sys
+import json
+from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 
-# Ensure the backend package is found relative to this file
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
+# Attempt to import the real OpenAI client; fall back to stub if missing
+try:
+    from openai import OpenAI  # type: ignore
+except ImportError:
+    from openai_stub import OpenAI  # type: ignore
 
-from backend.dispatcher import app
+# Initialize client using environment variable for API key
+client = OpenAI(
+    base_url="https://api.moonshot.cn/v1",
+    api_key=os.getenv("MOONSHOT_API_KEY"),
+)
+
+# Create FastAPI application
+app = FastAPI()
+
+# Define tools for function-calling routing
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "route_to_module",
+            "description": "არჩევს შესამესადაოႨ მოდულს მოდხვარის მოყხოგფისთვის",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "module": {
+                        "type": "string",
+                        "enum": ["psychology", "legal", "faq", "fallback"],
+                    },
+                    "payload": {"type": "object"},
+                },
+                "required": ["module", "payload"],
+            },
+        },
+    }
+]
+
+@app.post("/chat")
+async def chat(request: Request):
+    """Handle chat requests by forwarding to the Moonshot API."""
+    body = await request.json()
+    user_msg = body.get("message", "")
+
+    # Ensure API key is present
+    if not client.api_key:
+        return {"error": "MOONSHOT_API_KEY is not configured"}
+
+    response = client.chat.completions.create(
+        model="moonshot-v1-8k",
+        messages=[{"role": "user", "content": user_msg}],
+        tools=TOOLS,
+        tool_choice="auto",
+    )
+
+    tool_calls = response.choices[0].message.tool_calls
+    if tool_calls:
+        call = tool_calls[0]
+        data = json.loads(call.function.arguments)
+        return await handle_module(data["module"], data["payload"])
+
+    return {"reply": response.choices[0].message.content}
+
+
+async def handle_module(mod: str, payload: dict):
+    """Stub handler for routed modules. Returns module and payload."""
+    return {
+        "module": mod,
+        "result": f"\u2705 {mod}-მოდული აღცრულია",
+        "payload": payload,
+    }
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+
+# Mount static frontend after API routes to avoid 404s on /chat and /health
+app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
