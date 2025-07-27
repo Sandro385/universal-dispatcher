@@ -1,26 +1,18 @@
 FROM python:3.11-slim
-
-# Install system dependencies (none needed for this microservice)
-
-# Set working directory
 WORKDIR /app
 
-# Copy only requirements first for better cache utilisation
-COPY requirements.txt ./requirements.txt
-
-# Install Python dependencies
+# Copy requirements and install dependencies first to leverage Docker cache
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of the application code (dispatcher and frontend)
+COPY . .
 
-# Copy the dispatcher and frontend.  The dispatcher lives at the project
-# root.  The frontend directory contains a simple terminal UI that can
-# be served separately.
-COPY dispatcher.py ./dispatcher.py
-COPY frontend ./frontend
-
-# Expose port 8000 for local testing (Render will override via $PORT)
+# Expose default port (Render overrides PORT env var)
 EXPOSE 8000
 
-# Start the FastAPI app with uvicorn. Render sets the PORT environment
-# variable dynamically, so we use it with a default fallback to 8000.
-CMD ["bash", "-c", "exec uvicorn dispatcher:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Ensure output is unbuffered
+ENV PYTHONUNBUFFERED=1
+
+# Launch the FastAPI app via uvicorn; use PORT env var if provided
+CMD ["uvicorn", "dispatcher:app", "--host", "0.0.0.0", "--port", "8000"]
