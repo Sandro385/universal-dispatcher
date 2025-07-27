@@ -51,12 +51,17 @@ async def chat(request: Request):
     if not client.api_key:
         return {"error": "MOONSHOT_API_KEY is not configured"}
 
-    response = client.chat.completions.create(
-        model="moonshot-v1-8k",
-        messages=[{"role": "user", "content": user_msg}],
-        tools=TOOLS,
-        tool_choice="auto",
-    )
+    # Attempt to call the Moonshot API. Wrap in try/except so that errors are returned as JSON.
+    try:
+        response = client.chat.completions.create(
+            model="moonshot-v1-8k",
+            messages=[{"role": "user", "content": user_msg}],
+            tools=TOOLS,
+            tool_choice="auto",
+        )
+    except Exception as exc:
+        # Return only the exception type to avoid leaking details
+        return {"error": f"სერვერის შეცდომა: {type(exc).__name__}"}
 
     tool_calls = response.choices[0].message.tool_calls
     if tool_calls:
