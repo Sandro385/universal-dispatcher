@@ -28,3 +28,8 @@ async def dispatch(q: Query):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# === static UI ===
+from fastapi.staticfiles import StaticFiles
+app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
