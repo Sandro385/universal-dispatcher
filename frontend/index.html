@@ -3,104 +3,119 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ჩატი – Moonshot</title>
+  <title>ტერმინალი – Moonshot</title>
+  <!--
+    ახალი ვერსია ქმნის ტერმინალის სტილის სრულფასოვან ეკრანს: შავი ფონით, ვარსკვლავების ტექსტურით
+    და ღია ყვითელი შრიფტით. მხოლოდ ჩასაწერ ველს აქვს ციმციმა კურსორი, პასუხები
+    გამოდის ზედა ნაწილში ისე, თითქოს ტერმინალში გექნებათ შეტყობინებების ლოგი.
+  -->
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 800px;
-      margin: 2rem auto;
-      padding: 0 1rem;
-      color: #333;
-    }
-    h1 {
-      text-align: center;
-    }
-    .chat-container {
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      padding: 1rem;
-      height: 400px;
-      overflow-y: auto;
-      background: #f9f9f9;
-    }
-    .message {
-      margin-bottom: 0.75rem;
-    }
-    .message.user {
-      color: #007acc;
-    }
-    .message.assistant {
-      color: #008000;
-    }
-    form {
-      margin-top: 1rem;
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      /* შავი ფონზე ვარსკვლავების ეფექტის განთავსება */
+      background-color: #000;
+      background-image: radial-gradient(#444 1px, transparent 1px), radial-gradient(#222 1px, transparent 1px);
+      background-size: 4px 4px, 6px 6px;
+      background-position: 0 0, 3px 3px;
+      color: #FFD700;
+      font-family: "Courier New", Courier, monospace;
       display: flex;
-      gap: 0.5rem;
+      justify-content: center;
+      align-items: center;
     }
-    input[type="text"] {
-      flex-grow: 1;
-      padding: 0.5rem;
-      border: 1px solid #ccc;
-      border-radius: 4px;
+    /* ტერმინალის კონტეინერი, ეკრანის ცენტრალური ნაწილი */
+    #terminal {
+      width: 90%;
+      max-width: 800px;
     }
-    button {
-      padding: 0.5rem 1rem;
+    /* შეტყობინებების ლოგის ნაწილი */
+    #output {
+      white-space: pre-line;
+      line-height: 1.4;
+      margin-bottom: 1rem;
+      min-height: 40vh;
+      overflow-y: auto;
+    }
+    /* ინპუტი – მხოლოდ კურსორი და ტექსტი, უხილავი საზღვრების გარეშე */
+    #input {
+      width: 100%;
       border: none;
-      background-color: #007acc;
-      color: #fff;
-      border-radius: 4px;
-      cursor: pointer;
+      outline: none;
+      background: transparent;
+      color: #FFD700;
+      font-size: 24px;
+      caret-color: #FFD700;
     }
-    button:hover {
-      background-color: #005a99;
+    /* მობილურისთვის შრიფტის გაზრდა */
+    @media (max-width: 600px) {
+      #input {
+        font-size: 32px;
+      }
+      #output {
+        font-size: 28px;
+      }
     }
   </style>
 </head>
 <body>
-  <h1>მოხსენით ჩვენთან – Chatbot</h1>
-  <div class="chat-container" id="chat"></div>
-  <form id="chat-form">
-    <input type="text" id="message" placeholder="შეიყვანეთ თქვენი შეტყობინება..." required />
-    <button type="submit">გაგზავნა</button>
-  </form>
+  <div id="terminal">
+    <div id="output"></div>
+    <input id="input" type="text" autofocus autocomplete="off" />
+  </div>
   <script>
-    const form = document.getElementById('chat-form');
-    const chat = document.getElementById('chat');
+    const inputEl = document.getElementById('input');
+    const outputEl = document.getElementById('output');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const input = document.getElementById('message');
-      const text = input.value.trim();
-      if (!text) return;
-      appendMessage('user', text);
-      input.value = '';
+    // ყოველთვის დააფოკუსე ინფუტი, როდესაც მომხმარებელი ეკრანს შეეხება
+    document.body.addEventListener('click', () => inputEl.focus());
+
+    /**
+     * ამატებს ტექტსის ხაზს გამოსასვლელში და სქროლავს ბოლოსკენ.
+     * @param {string} text
+     */
+    function appendLine(text) {
+      outputEl.textContent += text + '\n';
+      outputEl.scrollTop = outputEl.scrollHeight;
+    }
+
+    /**
+     * აგზავნის შეტყობინებას backend-ზე და ამატებს მიღებულ პასუხს.
+     * @param {string} message
+     */
+    async function send(message) {
+      appendLine('თქვენ: ' + message);
       try {
         const res = await fetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text })
+          body: JSON.stringify({ message })
         });
         const data = await res.json();
         if (data.error) {
-          appendMessage('assistant', data.error);
+          appendLine('ბოტი: ' + data.error);
         } else if (data.reply) {
-          appendMessage('assistant', data.reply);
+          appendLine('ბოტი: ' + data.reply);
         } else {
-          // In case of a tool call, we display the JSON returned from handle_module
-          appendMessage('assistant', JSON.stringify(data));
+          appendLine('ბოტი: ' + JSON.stringify(data));
         }
       } catch (err) {
-        appendMessage('assistant', 'სერვერის შეცდომა: ' + err.message);
+        appendLine('ბოტი: სერვერის შეცდომა: ' + err.message);
+      }
+    }
+
+    // Enter ღილაკის დამუშავება
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const message = inputEl.value.trim();
+        if (message) {
+          send(message);
+          inputEl.value = '';
+        }
       }
     });
-
-    function appendMessage(role, text) {
-      const div = document.createElement('div');
-      div.className = 'message ' + role;
-      div.textContent = (role === 'user' ? 'თქვენ: ' : 'ბოტი: ') + text;
-      chat.appendChild(div);
-      chat.scrollTop = chat.scrollHeight;
-    }
   </script>
 </body>
 </html>
