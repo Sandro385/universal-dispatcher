@@ -133,3 +133,6 @@ def health() -> Dict[str, str]:
     Returns a simple JSON response indicating the service is running.
     """
     return {"status": "ok"}
+  # === static UI ===
+from fastapi.staticfiles import StaticFiles
+app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
