@@ -1,5 +1,6 @@
 import os
 import json
+
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
@@ -24,7 +25,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "route_to_module",
-            "description": "არჩევს შესამესადაოႨ მოდულს მოდხვარის მოყხოგფისთვის",
+            "description": "არჩევს შესაბამის მოდულს მომხმარებლის მოთხოვნისთვის",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -65,27 +66,24 @@ async def chat(request: Request):
 
     return {"reply": response.choices[0].message.content}
 
-
 async def handle_module(mod: str, payload: dict):
     """Stub handler for routed modules. Returns module and payload."""
     return {
         "module": mod,
-        "result": f"\u2705 {mod}-მოდული აღცრულია",
+        "result": f"✅ {mod}-მოდული აღძრულია",
         "payload": payload,
     }
-
 
 @app.get("/health")
 async def health():
     """Health check endpoint."""
     return {"status": "ok"}
 
-
 # Mount static frontend after API routes to avoid 404s on /chat and /health
 app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
-
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Use the PORT environment variable if provided (Render sets this), otherwise default to 8000
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
