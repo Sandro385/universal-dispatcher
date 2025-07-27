@@ -1,38 +1,106 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="ka">
 <head>
-<meta charset="utf-8"/>
-<title>Terminal</title>
-<style>
- body{margin:0;background:#000;color:#fff;font-family:monospace;}
- #cursor{animation:blink 1s infinite;}
- @keyframes blink{50%{opacity:0}}
- #out{white-space:pre-wrap;padding:1rem}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ჩატი – Moonshot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+    }
+    .chat-container {
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 1rem;
+      height: 400px;
+      overflow-y: auto;
+      background: #f9f9f9;
+    }
+    .message {
+      margin-bottom: 0.75rem;
+    }
+    .message.user {
+      color: #007acc;
+    }
+    .message.assistant {
+      color: #008000;
+    }
+    form {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+    input[type="text"] {
+      flex-grow: 1;
+      padding: 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      border: none;
+      background-color: #007acc;
+      color: #fff;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #005a99;
+    }
+  </style>
 </head>
 <body>
-<div id="out"></div><span id="cursor">_</span>
-<script>
-const out=document.getElementById('cursor');
-function write(text){
-  out.insertAdjacentText('beforebegin',text);
-  out.scrollIntoView();
-}
-const api="https://universal-dispatcher.onrender.com/chat";
-async function send(text){
-  const res=await fetch(api,{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({text,domain:"psych"})});
-  const j=await res.json();
-  write(j.reply+"\n");
-}
-document.addEventListener("keydown",async (e)=>{
-  if(e.key==="Enter"){
-    const line=document.getElementById("cursor").previousSibling.textContent.trim();
-    write("> "+line+"\n");
-    await send(line);
-  }
-});
-write("Welcome. Start typing and press ENTER.\n")
-</script>
+  <h1>მოხსენით ჩვენთან – Chatbot</h1>
+  <div class="chat-container" id="chat"></div>
+  <form id="chat-form">
+    <input type="text" id="message" placeholder="შეიყვანეთ თქვენი შეტყობინება..." required />
+    <button type="submit">გაგზავნა</button>
+  </form>
+  <script>
+    const form = document.getElementById('chat-form');
+    const chat = document.getElementById('chat');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('message');
+      const text = input.value.trim();
+      if (!text) return;
+      appendMessage('user', text);
+      input.value = '';
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        if (data.error) {
+          appendMessage('assistant', data.error);
+        } else if (data.reply) {
+          appendMessage('assistant', data.reply);
+        } else {
+          // In case of a tool call, we display the JSON returned from handle_module
+          appendMessage('assistant', JSON.stringify(data));
+        }
+      } catch (err) {
+        appendMessage('assistant', 'სერვერის შეცდომა: ' + err.message);
+      }
+    });
+
+    function appendMessage(role, text) {
+      const div = document.createElement('div');
+      div.className = 'message ' + role;
+      div.textContent = (role === 'user' ? 'თქვენ: ' : 'ბოტი: ') + text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+  </script>
 </body>
 </html>
