@@ -12,7 +12,7 @@ except ImportError:
 
 # Initialize client using environment variable for API key
 client = OpenAI(
-    base_url="https://api.moonshot.cn/v1",
+    base_url="https://api.moonshot.ai/v1",
     api_key=os.getenv("MOONSHOT_API_KEY"),
 )
 
