@@ -53,7 +53,7 @@ async def chat(request: Request):
 
     try:
         response = client.chat.completions.create(
-            model="moonshot-v1-8k",
+            model="kimi-k2-0711-preview",
             messages=[{"role": "user", "content": user_msg}],
             tools=TOOLS,
             tool_choice="auto",
