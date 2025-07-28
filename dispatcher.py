@@ -5,18 +5,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-# Attempt to import the real OpenAI client; fall back to stub if missing
 try:
-    from openai import OpenAI  # type: ignore
+    from openai import OpenAI          # type: ignore
 except ImportError:
-    from openai_stub import OpenAI  # type: ignore
+    from openai_stub import OpenAI     # type: ignore
 
-# --- ✅ რეგიონ-დამოკიდებული base URL ----------------------------
+# რეგიონზე დამოკიდებული ბაზა
 MOONSHOT_BASE_URL = os.getenv(
-    "MOONSHOT_BASE_URL",
-    "https://api.moonshot.ai/v1"   # .ai = Global; .cn = China Mainland
+    "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"
 )
-# -----------------------------------------------------------------
 
 client = OpenAI(
     base_url=MOONSHOT_BASE_URL,
@@ -48,14 +45,12 @@ TOOLS = [
 
 @app.post("/chat")
 async def chat(request: Request):
-    """Forward incoming message to Moonshot and relay the response."""
     body = await request.json()
     user_msg = body.get("message", "")
 
     if not client.api_key:
         return {"error": "MOONSHOT_API_KEY is not configured"}
 
-    # --- call Moonshot --------------------------------------------------
     try:
         response = client.chat.completions.create(
             model="moonshot-v1-8k",
@@ -65,7 +60,6 @@ async def chat(request: Request):
         )
     except Exception as exc:
         return {"error": f"{type(exc).__name__}"}
-    # --------------------------------------------------------------------
 
     try:
         tcalls = response.choices[0].message.tool_calls or []
@@ -80,7 +74,6 @@ async def chat(request: Request):
         return {"error": f"{type(exc).__name__}"}
 
 async def handle_module(mod: str, payload: dict):
-    """Stub for routed modules—extend as needed."""
     return {
         "module": mod,
         "result": f"✅ {mod}-მოდული აღძრულია",
@@ -91,23 +84,13 @@ async def handle_module(mod: str, payload: dict):
 async def health():
     return {"status": "ok"}
 
-# Serve static frontend
+# Static frontend
 app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
 
-# --- Global exception handler -----------------------------------------
+# Global exception handler
 @app.exception_handler(Exception)
 async def global_error_handler(request: Request, exc: Exception):
-    """Catch-all to guarantee JSON responses (avoids HTML 500)."""
     return JSONResponse(
         status_code=500,
         content={"error": f"{type(exc).__name__}"}
-    )
-# ----------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "8000")),
     )
