@@ -79,3 +79,12 @@ app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+from fastapi.responses import JSONResponse
+from fastapi import Request
+
+@app.exception_handler(Exception)
+async def global_error_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"error": f"{type(exc).__name__}"}
+    )
