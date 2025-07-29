@@ -1,0 +1,35 @@
+<script>
+  const form = document.getElementById('chat-form');
+  const input = document.getElementById('user-input');
+  const messagesDiv = document.getElementById('messages');
+
+  // UI helper
+  function addMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + role;
+    div.textContent = (role === 'user' ? '🙋‍♂️: ' : '🤖: ') + text;
+    messagesDiv.appendChild(div);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const content = input.value.trim();
+    if (!content) return;
+    input.value = '';
+    addMsg('user', content);
+
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content })   // ★ მთავარი ცვლილება
+      });
+      const data = await res.json();
+      addMsg('assistant', data.reply || 'სერვერის შეცდომა');  // ★ აქაც ვცვლით
+    } catch (err) {
+      console.error(err);
+      addMsg('assistant', 'დაკავშირება ვერ მოხერხდა.');
+    }
+  });
+</script>
