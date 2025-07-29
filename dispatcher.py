@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, Request
@@ -58,10 +59,30 @@ SYSTEM_MSG = {
     "content": (
         "შენ ხარ მრავალპროფილიანი, პროფესიონალური ასისტენტი. "
         "უპასუხე აბონენტის კითხვას პირდაპირ. "
-        "მხოლოდ მაშინ გამოიყენე ფუნქცია route_to_module, "
-        "თუ სპეციალისტის ჩართვა ნამდვილად აუცილებელია."
+        "თუ საუბარი ეხება თერაპიას, სეანსს, დიაგნოზს, ტრავმას, პანიკურ შეტევას "
+        "ან რაიმე სხვა ინტენსიურ ფსიქოლოგიურ თემას, აუცილებლად გამოიძახე ფუნქცია "
+        "route_to_module ფსიქოლოგიური მოდულის ჩასართავად. "
+        "ყველა სხვა შემთხვევაში გამოიყენე ფუნქცია მხოლოდ მაშინ, თუ სპეციალისტის ჩართვა "
+        "ნამდვილად აუცილებელია."
     ),
 }
+
+# --- ჰეურისტიკული ტრიგერები ფსიქოლოგიური თემებისთვის -------------------------
+PSYCHO_PATTERNS = [
+    r"\bთერაპ(ი|ევტ|ია)\b",
+    r"\bსეანს(ი|ები)\b",
+    r"\bტრავმ(ა|ული)\b",
+    r"\bდეპრეს(ია|იული)\b",
+    r"\bპანიკ(ის|ური)\b",
+    r"\bდიაგნოზ(ი|ის)\b",
+]
+
+def detect_need(text: str) -> bool:
+    """იღებს ტექსტს და აბრუნებს True‑ს, თუ ფსიქოლოგიური მოდული უნდა ჩაირთოს."""
+    for pat in PSYCHO_PATTERNS:
+        if re.search(pat, text, flags=re.IGNORECASE):
+            return True
+    return False
 
 # ------------------------------------------------------------------------------
 @app.post("/chat")
@@ -79,8 +100,8 @@ async def chat(request: Request):
     if not client.api_key:
         return {"error": "MOONSHOT_API_KEY is not configured"}
 
-    # -------- პირველადი გამოძახება — tools გარეშე ----------------------------
-    messages: List[Dict[str, str]] = [
+    # -------- პირველადი გამოძახება ------------------------------------------
+    messages: List[Dict[str, Any]] = [
         SYSTEM_MSG,
         {"role": "user", "content": user_msg},
     ]
@@ -89,7 +110,6 @@ async def chat(request: Request):
         first = client.chat.completions.create(
             model=MODEL,
             messages=messages,
-            # TOOLS მაინც გადავცემთ, რათა მოდელმა ფუნქცია *შეეძლოს* გამოიძახოს
             tools=TOOLS,
             tool_choice="auto",
             temperature=0.8,
@@ -102,53 +122,82 @@ async def chat(request: Request):
     assistant_msg = first.choices[0].message
     tcalls = assistant_msg.tool_calls or []
 
-    # --- თუ ფუნქცია არ გამოუძახია, პირდაპირ ვაბრუნებთ პასუხს -------------------
-    if not tcalls:
-        return {"reply": assistant_msg.content}
+    # --- 1) თუ მოდელმა თვითონ გამოიძახა ფსიქოლოგიური მოდული ------------------
+    if tcalls:
+        try:
+            call = tcalls[0]
+            args = json.loads(call.function.arguments)
+            module_result = await handle_module(args["module"], args["payload"])
+        except Exception as exc:
+            return {"error": f"Module error: {type(exc).__name__}: {exc}"}
 
-    # -------- ფუნქცია გამოიძახა → სერვერზე ვასრულებთ --------------------------
-    try:
-        # ამ მაგალითში ვიღებთ მხოლოდ პირველ call-ს
-        call = tcalls[0]
-        args = json.loads(call.function.arguments)
-        module_result = await handle_module(args["module"], args["payload"])
-    except Exception as exc:
-        return {"error": f"Module error: {type(exc).__name__}: {exc}"}
+        # ფუნქციის შედეგი ვაბრუნებთ მოდელს, რომ ერთიან პასუხად ჩამოაყალიბოს
+        messages.extend([
+            {"role": "assistant", "content": None, "tool_calls": tcalls},
+            {
+                "role": "function",
+                "name": call.function.name,
+                "content": json.dumps(module_result, ensure_ascii=False),
+            },
+        ])
 
-    # -------- ფუნქციის შედეგი ვაბრუნებთ მოდელს, რომ „გადაიღებოს“ -------------
-    messages.extend([
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": tcalls,
-        },
-        {
-            "role": "function",
-            "name": call.function.name,
-            "content": json.dumps(module_result, ensure_ascii=False),
-        },
-    ])
+        try:
+            final = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                tool_choice="none",
+                temperature=0.8,
+                top_p=0.95,
+                presence_penalty=0.5,
+            )
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
 
-    try:
-        final = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tool_choice="none",  # აქ აღარ ვრთავთ ახალ ფუნქციებს
-            temperature=0.8,
-            top_p=0.95,
-            presence_penalty=0.5,
-        )
-    except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"reply": final.choices[0].message.content or ""}
 
-    final_reply = final.choices[0].message.content or ""
-    return {"reply": final_reply}
+    # --- 2) მოდელმა *არ* გამოიძახა მოდული; własny ჰეურისტიკა ---------------
+    if detect_need(user_msg):
+        # ვამუშავებთ ფსიქოლოგიურ მოდულს შიდა რეჟიმში
+        module_result = await handle_module("psychology", {"trigger": "auto"})
+
+        # სიმულაციური tool‑call, რათა მოდელმა შეაერთოს პასუხი
+        pseudo_call = {
+            "id": "auto_psychology",
+            "function": {
+                "name": "route_to_module",
+            },
+            "arguments": json.dumps({"module": "psychology", "payload": {}}),
+        }
+
+        messages.extend([
+            {"role": "assistant", "content": None, "tool_calls": [pseudo_call]},
+            {
+                "role": "function",
+                "name": "route_to_module",
+                "content": json.dumps(module_result, ensure_ascii=False),
+            },
+        ])
+
+        try:
+            final = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                tool_choice="none",
+                temperature=0.8,
+                top_p=0.95,
+                presence_penalty=0.5,
+            )
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+        return {"reply": final.choices[0].message.content or ""}
+
+    # --- 3) საერთო შემთხვევაში მოდელის თავდაპირველი ტექსტი -------------------
+    return {"reply": assistant_msg.content}
 
 # ------------------------------------------------------------------------------
 async def handle_module(mod: str, payload: dict) -> dict:
-    """
-    შიდა ფუნქცია, რომელიც ასრულებს კონკრეტულ მოდულს და აბრუნებს შედეგს.
-    """
+    """შიდა ფუნქცია, რომელიც ასრულებს კონკრეტულ მოდულს და აბრუნებს შედეგს."""
     # --- აქ შეგიძლიათ რეალური ბიზნეს‑ლოგიკა ჩასვათ ---------------------------
     return {
         "module": mod,
