@@ -4,58 +4,27 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ტერმინალი – Moonshot</title>
-  <!--
-    ახალი ვერსია ქმნის ტერმინალის სტილის სრულფასოვან ეკრანს: შავი ფონით, ვარსკვლავების ტექსტურით
-    და ღია ყვითელი შრიფტით. მხოლოდ ჩასაწერ ველს აქვს ციმციმა კურსორი, პასუხები
-    გამოდის ზედა ნაწილში ისე, თითქოს ტერმინალში გექნებათ შეტყობინებების ლოგი.
-  -->
+
   <style>
     html, body {
-      margin: 0;
-      padding: 0;
-      height: 100%;
-      /* შავი ფონზე ვარსკვლავების ეფექტის განთავსება */
-      background-color: #000;
-      background-image: radial-gradient(#444 1px, transparent 1px), radial-gradient(#222 1px, transparent 1px);
-      background-size: 4px 4px, 6px 6px;
-      background-position: 0 0, 3px 3px;
-      color: #FFD700;
-      font-family: "Courier New", Courier, monospace;
-      display: flex;
-      justify-content: center;
-      align-items: center;
+      margin: 0; padding: 0; height: 100%;
+      background:#000;
+      background-image:
+        radial-gradient(#444 1px,transparent 1px),
+        radial-gradient(#222 1px,transparent 1px);
+      background-size:4px 4px,6px 6px;
+      background-position:0 0,3px 3px;
+      color:#FFD700;
+      font-family:"Courier New",Courier,monospace;
+      display:flex; justify-content:center; align-items:center;
     }
-    /* ტერმინალის კონტეინერი, ეკრანის ცენტრალური ნაწილი */
-    #terminal {
-      width: 90%;
-      max-width: 800px;
-    }
-    /* შეტყობინებების ლოგის ნაწილი */
-    #output {
-      white-space: pre-line;
-      line-height: 1.4;
-      margin-bottom: 1rem;
-      min-height: 40vh;
-      overflow-y: auto;
-    }
-    /* ინპუტი – მხოლოდ კურსორი და ტექსტი, უხილავი საზღვრების გარეშე */
-    #input {
-      width: 100%;
-      border: none;
-      outline: none;
-      background: transparent;
-      color: #FFD700;
-      font-size: 24px;
-      caret-color: #FFD700;
-    }
-    /* მობილურისთვის შრიფტის გაზრდა */
-    @media (max-width: 600px) {
-      #input {
-        font-size: 32px;
-      }
-      #output {
-        font-size: 28px;
-      }
+    #terminal       { width:90%; max-width:800px; }
+    #output         { white-space:pre-line; line-height:1.4; margin-bottom:1rem;
+                      min-height:40vh; overflow-y:auto; }
+    #input          { width:100%; border:none; outline:none; background:transparent;
+                      color:#FFD700; font-size:24px; caret-color:#FFD700; }
+    @media (max-width:600px){
+      #input{font-size:32px} #output{font-size:28px}
     }
   </style>
 </head>
@@ -64,58 +33,57 @@
     <div id="output"></div>
     <input id="input" type="text" autofocus autocomplete="off" />
   </div>
-  <script>
-    const inputEl = document.getElementById('input');
-    const outputEl = document.getElementById('output');
 
-    // ყოველთვის დააფოკუსე ინფუტი, როდესაც მომხმარებელი ეკრანს შეეხება
-    document.body.addEventListener('click', () => inputEl.focus());
+<script>
+const inputEl  = document.getElementById('input');
+const outputEl = document.getElementById('output');
 
-    /**
-     * ამატებს ტექტსის ხაზს გამოსასვლელში და სქროლავს ბოლოსკენ.
-     * @param {string} text
-     */
-    function appendLine(text) {
-      outputEl.textContent += text + '\n';
-      outputEl.scrollTop = outputEl.scrollHeight;
-    }
+document.body.addEventListener('click', () => inputEl.focus());
 
-    /**
-     * აგზავნის შეტყობინებას backend-ზე და ამატებს მიღებულ პასუხს.
-     * @param {string} message
-     */
-    async function send(message) {
-      appendLine('თქვენ: ' + message);
-      try {
-        const res = await fetch('/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message })
-        });
-        const data = await res.json();
-        if (data.error) {
-          appendLine('ბოტი: ' + data.error);
-        } else if (data.reply) {
-          appendLine('ბოტი: ' + data.reply);
-        } else {
-          appendLine('ბოტი: ' + JSON.stringify(data));
-        }
-      } catch (err) {
-        appendLine('ბოტი: სერვერის შეცდომა: ' + err.message);
-      }
-    }
+function appendLine(text){
+  outputEl.textContent += text + '\n';
+  outputEl.scrollTop    = outputEl.scrollHeight;
+}
 
-    // Enter ღილაკის დამუშავება
-    inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const message = inputEl.value.trim();
-        if (message) {
-          send(message);
-          inputEl.value = '';
-        }
-      }
+/** აგზავნის შეტყობინებას backend-ზე */
+async function send(message){
+  appendLine('თქვენ: ' + message);
+
+  try {
+    const res = await fetch('/chat', {
+      method :'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body   :JSON.stringify({ message })
     });
-  </script>
+
+    // --- 🆕 ყოველთვის ვკითხულობთ როგორც ტექსტს -------------
+    const raw  = await res.text();
+    let   data = null;
+    try   { data = JSON.parse(raw); } catch { /* არა-JSON პასუხია */ }
+
+    if (data && data.error){
+      appendLine('ბოტი: ' + data.error);
+    } else if (data && data.reply){
+      appendLine('ბოტი: ' + data.reply);
+    } else {
+      appendLine('ბოტი: ' + raw);   // 429 / 400 / სხვა ტექსტური პასუხი
+    }
+
+  } catch (err){
+    appendLine('ბოტი: სერვერის შეცდომა: ' + err.message);
+  }
+}
+
+inputEl.addEventListener('keydown', (e)=>{
+  if (e.key === 'Enter'){
+    e.preventDefault();
+    const message = inputEl.value.trim();
+    if (message){
+      send(message);
+      inputEl.value = '';
+    }
+  }
+});
+</script>
 </body>
 </html>
