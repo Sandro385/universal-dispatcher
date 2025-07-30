@@ -1,146 +1,108 @@
-import os, json, re, time
+import os, json, re
 from typing import List, Dict, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from openai import OpenAI, RateLimitError
+import backoff
 
-# ---------------------------------------------------------------- Moonshot Kimi
-try:
-    from openai import OpenAI             # type: ignore
-except ImportError:
-    from openai_stub import OpenAI        # type: ignore
-
+# ------------------------------- კლიენტი  (Moonshot ან OpenAI, როგორც გსურთ)
 client = OpenAI(
     base_url=os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"),
     api_key=os.getenv("MOONSHOT_API_KEY"),
 )
 MODEL = "kimi-k2-0711-preview"
 
-# ---------------------------------------------------------------- FastAPI / cfg
+# ----------------------------------------- FastAPI
 app = FastAPI()
 
-TOOLS: List[Dict[str, Any]] = [{
+TOOLS = [{
     "type": "function",
     "function": {
         "name": "route_to_module",
-        "description": "არჩევს შესაბამის მოდულს (psychology, legal, faq …)",
+        "description": "psychology, legal, faq, fallback",
         "parameters": {
             "type": "object",
             "properties": {
-                "module":  {"type": "string",
-                            "enum": ["psychology","legal","faq","fallback"]},
-                "payload": {"type": "object"},
+                "module":  {"type":"string","enum":["psychology","legal","faq","fallback"]},
+                "payload": {"type":"object"},
             },
-            "required": ["module", "payload"],
+            "required": ["module","payload"],
         },
     },
 }]
 
-SYSTEM_MSG = {
-    "role": "system",
-    "content": (
-        "შენ ხარ მრავალპროფილიანი, პროფესიონალური ასისტენტი. "
-        "თერაპია/სეანსი/პანიკა/ტრავმა — აუცილებლად route_to_module(psychology). "
-        "დანარჩენ შემთხვევაში ინსტრუმენტი გამოიყენე მხოლოდ საჭირო 때."
-    ),
+SYSTEM_MSG = {"role":"system","content":
+    "შენ ხარ მრავალპროფილიანი, პროფესიონალური ასისტენტი. "
+    "თერაპია/ტრავმა/პანიკა — გამოიყენე route_to_module(psychology)."
 }
 
-PSYCHO_PATTERNS = [
-    r"\bთერაპ(ი|ევტ|ია)\b", r"\bსეანს(ი|ები)\b",
-    r"\bტრავმ(ა|ული)\b",     r"\bდეპრეს(ია|იული)\b",
-    r"\bპანიკ(ის|ური)\b",    r"\bდიაგნოზ(ი|ის)\b",
-]
-def detect_need(txt: str) -> bool:
-    return any(re.search(p, txt, re.IGNORECASE) for p in PSYCHO_PATTERNS)
+PATTERNS = [r"\bთერაპ(ი|ევტ|ია)\b", r"\bსეანს(ი|ები)\b",
+            r"\bტრავმ(ა|ული)\b",    r"\bპანიკ(ის|ური)\b"]
+def need_psy(s:str)->bool: return any(re.search(p,s,re.I) for p in PATTERNS)
 
-# ---------------------------------------------------------------- /chat
+# ------------------------------- /chat
+@backoff.on_exception(backoff.expo, RateLimitError, max_time=30)
+def kimi(**kw): return client.chat.completions.create(**kw)
+
 @app.post("/chat")
-async def chat(request: Request):
-    body = await request.json()
-    user_msg: str = body.get("message", "").strip()
-    if not user_msg:
-        return {"error": "empty message"}
-    if not client.api_key:
-        return {"error": "MOONSHOT_API_KEY is not configured"}
+async def chat(r: Request):
+    data = await r.json()
+    text = data.get("message","").strip()
+    if not text: return {"error":"empty"}
+    if not client.api_key: return {"error":"API key missing"}
 
-    base_msgs: List[Dict[str, Any]] = [SYSTEM_MSG, {"role": "user", "content": user_msg}]
+    # ① პირველი მოდელის პასუხი
+    first = kimi(model=MODEL,
+                 messages=[SYSTEM_MSG,{"role":"user","content":text}],
+                 tools=TOOLS, tool_choice="auto")
+    a = first.choices[0].message
+    tc = a.tool_calls or []
 
-    # ① პირველად ვაიძულებთ Kimi‑ს გადაწყვიტოს
-    first = client.chat.completions.create(
-        model=MODEL, messages=base_msgs,
-        tools=TOOLS, tool_choice="auto",
-        temperature=0.8, top_p=0.95, presence_penalty=0.5,
-    )
-    assistant = first.choices[0].message
-    tcalls    = assistant.tool_calls or []
+    # ② თუ არც tool არც ჰეურისტიკა − პირდაპირ
+    if not tc and not need_psy(text):
+        return {"reply": a.content}
 
-    # ② თუ არც tool‑ი არც ჰეურისტიკა — პირდაპირ ვაბრუნებთ
-    if not tcalls and not detect_need(user_msg):
-        return {"reply": assistant.content}
-
-    # ③ ჰეურისტიკამ გამოიწვია ფსიქო‑მოდული
-    if not tcalls:
-        tcalls = [{
-            "id": "auto_psychology",
+    # ③ ჰეურისტიკული ფსიქო‑ტრიგერი
+    if not tc:
+        tc = [{
+            "id": "auto_psy",
             "function": {"name": "route_to_module"},
-            "arguments": json.dumps({"module": "psychology", "payload": {"text": user_msg}}),
+            "arguments": json.dumps({"module":"psychology","payload":{"text":text}})
         }]
 
-    call = tcalls[0]
-    args = json.loads(call["arguments"]) if isinstance(call, dict) \
-          else json.loads(call.function.arguments)
-    args["payload"].setdefault("text", user_msg)
+    call = tc[0]
+    args = json.loads(call["arguments"]) if isinstance(call,dict) else \
+           json.loads(call.function.arguments)
+    result = await handle_module(args["module"], args["payload"])
 
-    # ④ შიდა მოდულის პასუხი
-    module_result = await handle_module(args["module"], args["payload"])
-
-    # ⑤ ორიგინალი assistant‑ს შეტყობინება 그대로 ვაბრუნებთ
-    orig_assistant = assistant.model_dump()
-
-    follow_msgs = [
-        SYSTEM_MSG,
-        {"role": "user",      "content": user_msg},
-        orig_assistant,                                   # ← უცვლელად
+    # ④ ორიგინალი assistant‑ი + შესაბამისი function‑პასუხი
+    follow = [
+        a.model_dump(),   # content=None, tool_calls=[…]
         {
-            "role": "function",
-            "name": call["function"]["name"] if isinstance(call, dict)
-                                             else call.function.name,
-            "tool_call_id": call["id"]        if isinstance(call, dict)
-                                             else call.id,
-            "content": json.dumps(module_result, ensure_ascii=False),
-        },
+            "role":"function",
+            "name": call["function"]["name"] if isinstance(call,dict) else call.function.name,
+            "tool_call_id": call["id"]       if isinstance(call,dict) else call.id,
+            "content": json.dumps(result,ensure_ascii=False),
+        }
     ]
 
-    final = client.chat.completions.create(
-        model=MODEL,
-        messages=follow_msgs,
-        tool_choice="none",
-        temperature=0.8, top_p=0.95, presence_penalty=0.5,
-    )
+    final = kimi(model=MODEL, messages=follow, tool_choice="none")
     return {"reply": final.choices[0].message.content}
 
-# ---------------------------------------------------------------- handle_module
-async def handle_module(mod: str, payload: dict) -> dict:
-    """სტუბი — აქ ჩასვით OpenAI‑Assistant‑ის რეალური 호출ი, როცა მზად იქნებით."""
-    if mod == "psychology":
-        return {
-            "module": "psychology",
-            "result": "ok",
-            "advice": (
-                "ფსიქო‑მოდულის ტესტური პასუხი. "
-                "შემდეგ შეცვალეთ OpenAI‑assistant‑ის რეალურ შედეგზე."
-            ),
-            "payload": payload,
-        }
-    return {"module": mod, "result": "ok", "payload": payload}
+# ------------------------------- შიდა მოდულები
+async def handle_module(mod:str, payload:dict)->dict:
+    if mod=="psychology":
+        return {"module":"psychology","result":"ok",
+                "advice":"ტესტური პასუხი ფსიქო‑მოდულიდან","payload":payload}
+    return {"module":mod,"result":"ok","payload":payload}
 
-# ---------------------------------------------------------------- Health & UI
+# ------------------------------- Health + Static UI
 @app.get("/health")
-async def health(): return {"status": "ok"}
-
+async def health(): return {"status":"ok"}
 app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
 
 @app.exception_handler(Exception)
-async def err(_, exc: Exception):
-    return JSONResponse(status_code=500,
-                        content={"error": f"{type(exc).__name__}: {exc}"})
+async def catcher(_, exc: Exception):
+    # სრულ stacktrace‑ს ლოგში ვტოვებთ, front‑end‑ს მოკლე ტექსტი უბრუნდება
+    return JSONResponse(500, content={"error": str(exc)})
