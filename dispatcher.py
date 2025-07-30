@@ -1,10 +1,5 @@
 # backend/dispatcher.py
-# ===============================================================
-#  მთავარი დისპეჩერი – Moonshot-ზე (kimi-k2-0711-preview) დაფუძნებული
-#  მრავალმოდულიანი ჩატი.  ფსიქოლოგიური მოთხოვნები ავტომატურად
-#  იროუტება სპეც-მოდულზე; დანარჩენი - პირდაპირ მოდელი პასუხობს.
-# ===============================================================
-
+# ---------------------------------------------------------------------------
 import os, json, re
 from typing import List, Dict, Any
 
@@ -12,10 +7,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from openai import OpenAI, RateLimitError          # type: ignore
-import backoff
+from openai import OpenAI, RateLimitError          # pip install openai~=1.37
+import backoff                                     # pip install backoff
 
-# ----------------------------------------------------------------- Moonshot Kimi
+# -------------------------------------------------------------------- Moonshot
 client = OpenAI(
     base_url=os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1"),
     api_key=os.getenv("MOONSHOT_API_KEY"),
@@ -33,8 +28,10 @@ TOOLS: List[Dict[str, Any]] = [{
         "parameters": {
             "type": "object",
             "properties": {
-                "module":  {"type": "string",
-                            "enum": ["psychology", "legal", "faq", "fallback"]},
+                "module":  {
+                    "type": "string",
+                    "enum": ["psychology", "legal", "faq", "fallback"]
+                },
                 "payload": {"type": "object"},
             },
             "required": ["module", "payload"],
@@ -46,117 +43,124 @@ SYSTEM_MSG = {
     "role": "system",
     "content": (
         "შენ ხარ მრავალპროფილიანი, პროფესიონალური ასისტენტი. "
-        "თერაპია, პანიკა, ტრავმა ან მსგავსი თემის შემთხვევაში აუცილებლად "
-        "route_to_module(psychology) უნდა გამოიძახო. "
-        "სხვა დროს ინსტრუმენტს გამოიყენებ მხოლოდ საჭიროების შემთხვევაში."
-    )
+        "თუ საუბარი ეხება თერაპიას, პანიკურ შეტევას, ძლიერ ტრავმულ გამოცდილებას "
+        "ან სხვა ინტენსიურ ფსიქოლოგიურ თემას, გამოიძახე "
+        "route_to_module მოდული = psychology. "
+        "დანარჩენ შემთხვევაში ინსტრუმენტი გამოიყენე მხოლოდ მაშინ, "
+        "თუ სპეციალისტის ჩართვა ნამდვილად საჭიროა."
+    ),
 }
 
-# --- ჰეურისტიკული ტრიგერები ---------------------------------------------------
+# ჰეურისტიკა: როცა Kimi-მ ვერ დაიჭირა ფსიქოთემა, თავად გავააქტიუროთ
 _PATTERNS = [
     r"\bთერაპ(ი|ევტ|ია)\b", r"\bსეანს(ი|ები)\b",
     r"\bტრავმ(ა|ული)\b",    r"\bპანიკ(ის|ური)\b",
 ]
-def need_psy(text: str) -> bool:
+def need_psychology(text: str) -> bool:
     return any(re.search(p, text, re.IGNORECASE) for p in _PATTERNS)
 
-# --- 429-ის ავტომატური რეტრაი --------------------------------------------------
-@backoff.on_exception(backoff.expo, RateLimitError, max_time=30)
-def kimi(**kwargs):
-    """Moonshot-ზე გადამისამართებული chat.completions.create ისრობს 429-ზე re-try-ს."""
-    return client.chat.completions.create(**kwargs)
+# --------------------------------------------------------------------------- util
+@backoff.on_exception(backoff.expo, RateLimitError, max_time=60)
+def kimi(**kw):
+    """Moonshot call with automatic backoff on 429."""
+    return client.chat.completions.create(**kw)
 
-# --------------------------------------------------------------------- /chat ---
+# --------------------------------------------------------------------------- /chat
 @app.post("/chat")
 async def chat(request: Request):
-    body = await request.json()
-    txt = body.get("message", "").strip()
-    if not txt:
+    data = await request.json()
+    user_text: str = data.get("message", "").strip()
+
+    if not user_text:
         return {"error": "empty message"}
     if not client.api_key:
         return {"error": "MOONSHOT_API_KEY is not configured"}
 
-    # ① პირველი რაუნდი — მოდელი თვითონ გადაწყვეტს გამოიძახოს თუ არა tool
-    first = kimi(
-        model=MODEL,
-        messages=[SYSTEM_MSG, {"role": "user", "content": txt}],
-        tools=TOOLS,
-        tool_choice="auto",
-        temperature=0.8, top_p=0.95, presence_penalty=0.5,
-    )
+    base_msgs = [SYSTEM_MSG, {"role": "user", "content": user_text}]
+
+    # ① Kimi პირველი პასუხი
+    first = kimi(model=MODEL,
+                 messages=base_msgs,
+                 tools=TOOLS,
+                 tool_choice="auto")
 
     assistant = first.choices[0].message
-    tcalls    = assistant.tool_calls or []
+    tool_calls = assistant.tool_calls or []
 
-    # ② არც tool, არც ჰეურისტიკა: პასუხის პირდაპირ გადაცემა
-    if not tcalls and not need_psy(txt):
+    # ② თუ არც tool და არც ჰეურისტიკა:返
+    if not tool_calls and not need_psychology(user_text):
         return {"reply": assistant.content}
 
-    # ③ ჰეურისტიკით გამოწვეული ფსიქო-მოდულის გამოთხოვა
-    if not tcalls:
-        tcalls = [{
+    # ③ ჰეურისტიკული განშტოება: ვქმნით ხელოვნურ call-ს
+    if not tool_calls:
+        tool_calls = [{
             "id": "auto_psychology",
-            "function": {"name": "route_to_module"},
-            "arguments": json.dumps({"module": "psychology",
-                                     "payload": {"text": txt}})
+            "type": "function",
+            "function": {
+                "name": "route_to_module",
+                "arguments": json.dumps(
+                    {"module": "psychology", "payload": {"text": user_text}},
+                    ensure_ascii=False
+                )
+            }
         }]
 
-    call = tcalls[0]
-    # arguments → dict
-    args = json.loads(call["arguments"]) if isinstance(call, dict) \
-        else json.loads(call.function.arguments)
+    # ④ arguments გაშლა
+    call = tool_calls[0]
+    if isinstance(call, dict):                # ხელოვნური გზა
+        args = json.loads(call["function"]["arguments"])
+        call_id   = call["id"]
+        func_name = call["function"]["name"]
+    else:                                     # რეალური Kimi tool_call
+        args = json.loads(call.function.arguments)
+        call_id   = call.id
+        func_name = call.function.name
 
-    # ④ შიდა მოდულის დამუშავება
-    result = await handle_module(args["module"], args["payload"])
+    # ⑤ შიდა მოდულის შესრულება
+    module_result = await handle_module(args["module"], args["payload"])
 
-    # ⑤ ვაგზავნით assistant-ისა და function-ის წყვილს ისევ Kimi-ში
-    follow_msgs = [
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": tcalls,
-        },
-        {
-            "role": "function",
-            "name":  call["function"]["name"] if isinstance(call, dict)
-                     else call.function.name,
-            "tool_call_id": call["id"] if isinstance(call, dict) else call.id,
-            "content": json.dumps(result, ensure_ascii=False),
-        },
-    ]
+    # ⑥ assistant-ისა და tool-ის წყვილი Kimi-სთვის 💚
+    assistant_call = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [call]                  # იგივე სტრუქტურა 그대로
+    }
+    tool_response = {
+        "role": "tool",
+        "name": func_name,
+        "tool_call_id": call_id,
+        "content": json.dumps(module_result, ensure_ascii=False),
+    }
+    follow_msgs = [assistant_call, tool_response]
 
-    final = kimi(
-        model=MODEL,
-        messages=follow_msgs,
-        tool_choice="none",
-        temperature=0.8, top_p=0.95, presence_penalty=0.5,
-    )
+    # ⑦ საბოლოო ტექსტის მიღება
+    final = kimi(model=MODEL,
+                 messages=follow_msgs,
+                 tool_choice="none")
+
     return {"reply": final.choices[0].message.content}
 
-# ----------------------------------------------------------- შიდა მოდულები ---
+# -------------------------------------------------------------------- Modules
 async def handle_module(mod: str, payload: dict) -> dict:
-    """ამ ეტაპზე – სტუბი; აქ შეიტანეთ რეალური ფსიქო-ასისტენტის ლოგიკა."""
+    """საჭიროებისამებრ ჩაანაცვლე რეალური ლოგიკით (OpenAI Assistant და ა.შ.)."""
     if mod == "psychology":
         return {
             "module": "psychology",
             "result": "ok",
-            "advice": "ეს არის ტესტური პასუხი ფსიქო-მოდულიდან.",
+            "advice": "ტესტური პასუხი ფსიქო-მოდულიდან",
             "payload": payload,
         }
+    # სხვა მოდულების სტუბი
     return {"module": mod, "result": "ok", "payload": payload}
 
-# ------------------------------------------------------------- Health + Static
+# ----------------------------------------------------------------- Health + UI
 @app.get("/health")
-async def health():
+async def health():               # Render health-check
     return {"status": "ok"}
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
 
-# -------------------------------------------------------- გლობალური catcher ---
 @app.exception_handler(Exception)
 async def catcher(_, exc: Exception):
-    # ლოგში სრულ stacktrace-ს ევროლიმ აისახება; front-end-ს მხოლოდ ტექსტი.
-    return JSONResponse(
-        status_code=500,
-        content={"error": f"{type(exc).__name__}: {exc}"}
-    )
+    # ლოგებში სრული stack-trace რჩება, UI-ში მხოლოდ მოკლე ტექსტი
+    return JSONResponse(500, content={"error": str(exc)})
