@@ -13,19 +13,31 @@ from fastapi.staticfiles import StaticFiles
 from openai import OpenAI, RateLimitError
 import backoff
 
-# -------------------------------------------------------------------- logging
 logging.basicConfig(level=logging.DEBUG)
 
-# -------------------------------------------------------------------- Moonshot
-client = OpenAI(
+# ------------------------------------------------------------------
+# 1) Moonshot – დისპეჩერი
+# ------------------------------------------------------------------
+moonshot_client = OpenAI(
     base_url=os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1"),
     api_key=os.getenv("MOONSHOT_API_KEY"),
 )
-MODEL = "kimi-k2-0711-preview"
+MOONSHOT_MODEL = "kimi-k2-0711-preview"
 
-# ---------------------------------------------------------------------- FastAPI
+# ------------------------------------------------------------------
+# 2) OpenAI – ფსიქოლოგიური მოდული
+# ------------------------------------------------------------------
+openai_client = OpenAI(
+    base_url="https://api.openai.com/v1",
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
+OPENAI_MODEL = "gpt-4o-mini"
+
 app = FastAPI()
 
+# ------------------------------------------------------------------
+# Tool-ები Moonshot-ისთვის
+# ------------------------------------------------------------------
 TOOLS: List[Dict[str, Any]] = [{
     "type": "function",
     "function": {
@@ -57,21 +69,20 @@ SYSTEM_MSG = {
     ),
 }
 
-# ჰეურისტიკა
 _PATTERNS = [
     r"\bთერაპ(ი|ევტ|ია)\b", r"\bსეანს(ი|ები)\b",
-    r"\bტრავმ(ა|ული)\b",    r"\bპანიკ(ის|ური)\b",
+    r"\bტრავმ(ა|ული)\b", r"\bპანიკ(ის|ური)\b",
 ]
 def need_psychology(text: str) -> bool:
     return any(re.search(p, text, re.IGNORECASE) for p in _PATTERNS)
 
-# --------------------------------------------------------------------------- util
 @backoff.on_exception(backoff.expo, RateLimitError, max_time=60)
 def kimi(**kw):
-    """Moonshot call with automatic backoff on 429."""
-    return client.chat.completions.create(**kw)
+    return moonshot_client.chat.completions.create(**kw)
 
-# --------------------------------------------------------------------------- /chat
+# ---------------------------------------------------------------
+# /chat – Moonshot-ის დისპეჩერი
+# ---------------------------------------------------------------
 @app.post("/chat")
 async def chat(request: Request):
     data = await request.json()
@@ -79,13 +90,13 @@ async def chat(request: Request):
 
     if not user_text:
         return JSONResponse({"error": "empty message"}, status_code=400)
-    if not client.api_key:
+    if not moonshot_client.api_key:
         return JSONResponse({"error": "MOONSHOT_API_KEY is not configured"}, status_code=500)
 
     base_msgs = [SYSTEM_MSG, {"role": "user", "content": user_text}]
 
-    # ① Kimi პირველი პასუხი
-    first = kimi(model=MODEL,
+    # ① Moonshot-ის პირველი პასუხი
+    first = kimi(model=MOONSHOT_MODEL,
                  messages=base_msgs,
                  tools=TOOLS,
                  tool_choice="auto")
@@ -93,11 +104,9 @@ async def chat(request: Request):
     assistant = first.choices[0].message
     tool_calls = assistant.tool_calls or []
 
-    # ② თუ არც tool და არც ჰეურისტიკა
     if not tool_calls and not need_psychology(user_text):
         return {"reply": assistant.content}
 
-    # ③ ჰეურისტიკული განშტოება
     if not tool_calls:
         tool_calls = [{
             "id": "auto_psychology",
@@ -111,63 +120,55 @@ async def chat(request: Request):
             }
         }]
 
-    # ④ arguments გაშლა
     call = tool_calls[0]
     if isinstance(call, dict):
         args = json.loads(call["function"]["arguments"])
-        call_id   = call["id"]
-        func_name = call["function"]["name"]
     else:
         args = json.loads(call.function.arguments)
-        call_id   = call.id
-        func_name = call.function.name
 
-    # ⑤ შიდა მოდულის შესრულება
+    # ② შიდა მოდულის გამოძახება
     module_result = await handle_module(args["module"], args["payload"])
 
-    # ⑥ assistant + tool messages (OpenAI-ს სწორი ფორმატით)
-    assistant_call = {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": func_name,
-                    "arguments": json.dumps(args, ensure_ascii=False)
-                }
-            }
-        ]
-    }
-    tool_response = {
-        "role": "tool",
-        "tool_call_id": call_id,
-        "content": json.dumps(module_result, ensure_ascii=False),
-    }
+    # ③ საბოლოო პასუხი მომხმარებლისთვის
+    return {"reply": module_result.get("text", "მოდულმა პასუხი არ დააბრუნა")}
 
-    follow_msgs = base_msgs + [assistant_call, tool_response]
-
-    # ⑦ საბოლოო ტექსტის მიღება
-    final = kimi(model=MODEL,
-                 messages=follow_msgs,
-                 tool_choice="none")
-
-    return {"reply": final.choices[0].message.content}
-
-# -------------------------------------------------------------------- Modules
+# ---------------------------------------------------------------
+# Modules – OpenAI-ს ფსიქოლოგიური მოდული
+# ---------------------------------------------------------------
 async def handle_module(mod: str, payload: dict) -> dict:
-    """საჭიროებისამებრ ჩაანაცვლე რეალური ლოგიკით."""
     if mod == "psychology":
-        return {
-            "module": "psychology",
-            "result": "ok",
-            "advice": "ტესტური პასუხი ფსიქო-მოდულიდან",
-            "payload": payload,
-        }
-    return {"module": mod, "result": "ok", "payload": payload}
+        if not openai_client.api_key:
+            return {"error": "OPENAI_API_KEY is not configured"}
 
-# ----------------------------------------------------------------- Health + UI
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "შენ ხარ გამოცდილი ფსიქოლოგი. "
+                    "მომხმარებელს დაეხმარე ემოციურად, უსაფრთხოდ და კონფიდენციალურად."
+                )
+            },
+            {"role": "user", "content": payload["text"]},
+        ]
+
+        try:
+            resp = openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                max_tokens=800,
+                temperature=0.7,
+            )
+            return {"module": "psychology", "text": resp.choices[0].message.content}
+        except Exception as e:
+            logging.exception("OpenAI psychology module error")
+            return {"error": str(e)}
+
+    # დანარჩენი მოდულები
+    return {"module": mod, "text": f"სტუბ-პასუხი {mod}-დან"}
+
+# ---------------------------------------------------------------
+# Health + UI
+# ---------------------------------------------------------------
 @app.get("/health")
 async def health():
     return {"status": "ok"}
