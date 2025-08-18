@@ -6,33 +6,43 @@ from typing import Dict, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import openai
 from openai import AsyncOpenAI
 
-# ------------------------------------------------------------------
+# ----------------------------------------------------------
 # Configuration
-# ------------------------------------------------------------------
+# ----------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY env variable is required")
 
 app = FastAPI()
 
+# CORS – საშუალებას აძლევს ბრაუზერიდან მოთხოვნების გაგზავნას
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 def get_openai_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# ------------------------------------------------------------------
-# Main chat endpoint
-# ------------------------------------------------------------------
-@app.post("/api/chat")
+# ----------------------------------------------------------
+# Main chat endpoint – უსმენს /chat-ს (არა /api/chat)
+# ----------------------------------------------------------
+@app.post("/chat")
 async def chat(request: Request):
     """
-    Example JSON body:
+    Expected JSON body:
     {
       "module": "psychology",
-      "text":   "ვგრძნობ თავს მარტოსულად..."
+      "text":   "გამარჯობა, დახმარება მჭირდება..."
     }
     """
     body: Dict[str, Any] = await request.json()
@@ -47,9 +57,9 @@ async def chat(request: Request):
 
     return await handle_module(module, {"text": text})
 
-# ------------------------------------------------------------------
-# Modules – OpenAI-ს ფსიქოლოგიური მოდული
-# ------------------------------------------------------------------
+# ----------------------------------------------------------
+# Modules – OpenAI psychology
+# ----------------------------------------------------------
 async def handle_module(mod: str, payload: dict) -> dict:
     if mod == "psychology":
         client = get_openai_client()
@@ -73,39 +83,36 @@ async def handle_module(mod: str, payload: dict) -> dict:
                 temperature=0.7,
             )
 
-            # Normalize content (string or list of blocks)
+            # Normalize response
             msg = resp.choices[0].message
             content = ""
             if isinstance(msg.content, str):
                 content = msg.content
             else:  # list of blocks
                 for block in msg.content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            content += block.get("text", "")
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        content += block.get("text", "")
                     else:
                         content += getattr(block, "text", "")
 
-            return {
-                "module": "psychology",
-                "text": content,
-            }
+            return {"module": "psychology", "text": content}
         except Exception as e:
             logging.exception("OpenAI psychology module error")
             return {"error": str(e)}
 
-    # დანარჩენი მოდულები — სტუბები
+    # Fallback stub
     return {"module": mod, "text": f"სტუბ-პასუხი {mod}-დან"}
 
-# ------------------------------------------------------------------
-# Health + UI
-# ------------------------------------------------------------------
+# ----------------------------------------------------------
+# Health + static files
+# ----------------------------------------------------------
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="static")
 
+# Global exception handler
 @app.exception_handler(Exception)
 async def catcher(_, exc: Exception):
     logging.exception("Unhandled error")
