@@ -4,25 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ტერმინალი – Moonshot</title>
-
   <style>
-    html, body {
-      margin: 0; padding: 0; height: 100%;
-      background:#000;
-      background-image:
-        radial-gradient(#444 1px,transparent 1px),
-        radial-gradient(#222 1px,transparent 1px);
-      background-size:4px 4px,6px 6px;
-      background-position:0 0,3px 3px;
-      color:#FFD700;
-      font-family:"Courier New",Courier,monospace;
-      display:flex; justify-content:center; align-items:center;
-    }
-    #terminal       { width:90%; max-width:800px; }
-    #output         { white-space:pre-line; line-height:1.4; margin-bottom:1rem;
-                      min-height:40vh; overflow-y:auto; }
-    #input          { width:100%; border:none; outline:none; background:transparent;
-                      color:#FFD700; font-size:24px; caret-color:#FFD700; }
+    html, body { margin:0; padding:0; height:100%; background:#000;
+      background-image: radial-gradient(#444 1px,transparent 1px),
+                        radial-gradient(#222 1px,transparent 1px);
+      background-size:4px 4px,6px 6px; background-position:0 0,3px 3px;
+      color:#FFD700; font-family:"Courier New",Courier,monospace;
+      display:flex; justify-content:center; align-items:center; }
+    #terminal { width:90%; max-width:800px; }
+    #output { white-space:pre-line; line-height:1.4; margin-bottom:1rem;
+              min-height:40vh; overflow-y:auto; }
+    #input { width:100%; border:none; outline:none; background:transparent;
+             color:#FFD700; font-size:24px; caret-color:#FFD700; }
     @media (max-width:600px){
       #input{font-size:32px} #output{font-size:28px}
     }
@@ -42,10 +35,9 @@ document.body.addEventListener('click', () => inputEl.focus());
 
 function appendLine(text){
   outputEl.textContent += text + '\n';
-  outputEl.scrollTop    = outputEl.scrollHeight;
+  outputEl.scrollTop = outputEl.scrollHeight;
 }
 
-/** აგზავნის შეტყობინებას backend-ზე */
 async function send(message){
   appendLine('თქვენ: ' + message);
 
@@ -53,22 +45,15 @@ async function send(message){
     const res = await fetch('/chat', {
       method :'POST',
       headers:{ 'Content-Type':'application/json' },
-      body   :JSON.stringify({ message })
+      body   : JSON.stringify({ module: "psychology", text: message })   // შესწორება აქ
     });
 
-    // --- 🆕 ყოველთვის ვკითხულობთ როგორც ტექსტს -------------
-    const raw  = await res.text();
-    let   data = null;
-    try   { data = JSON.parse(raw); } catch { /* არა-JSON პასუხია */ }
-
-    if (data && data.error){
+    const data = await res.json();
+    if (data.error) {
       appendLine('ბოტი: ' + data.error);
-    } else if (data && data.reply){
-      appendLine('ბოტი: ' + data.reply);
     } else {
-      appendLine('ბოტი: ' + raw);   // 429 / 400 / სხვა ტექსტური პასუხი
+      appendLine('ბოტი: ' + data.text);
     }
-
   } catch (err){
     appendLine('ბოტი: სერვერის შეცდომა: ' + err.message);
   }
