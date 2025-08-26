@@ -94,10 +94,11 @@ async def classify_intent_via_llm(text: str) -> float:
     ]
     response = await call_openai_chat(messages)
     try:
-        match = re.search(r"0(?:\\.\\d+)?|1(?:\\.0+)?", response)
+        match = re.search(r"^\s*([0-1](?:\.\d+)?)\s*$", response)
         if match:
-            return float(match.group())
-    except Exception:
+            return float(match.group(1))
+    except Exception as e:
+        logging.exception(f"Error parsing classification response: {e}")
         pass
     return 0.0
 
@@ -108,9 +109,10 @@ async def detect_module(text: str) -> str:
     2. თუ სიტყვები არ მოიძებნა, იყენებს LLM-ზე დაფუძნებულ კლასიფიკაციას.
     Probability ≥ 0.3 -> „psychology“, სხვაგან -> „general“.
     """
-    if PSYCH_KEYWORDS.search(text or ""):
+    text = text or ""
+    if PSYCH_KEYWORDS.search(text):
         return "psychology"
-    probability = await classify_intent_via_llm(text or "")
+    probability = await classify_intent_via_llm(text)
     return "psychology" if probability >= 0.3 else "general"
 
 async def call_openai_chat(messages: List[Dict[str, str]]) -> str:
@@ -123,16 +125,8 @@ async def call_openai_chat(messages: List[Dict[str, str]]) -> str:
             max_tokens=800,
             temperature=0.7,
         )
-        msg = resp.choices[0].message
-        content = ""
-        if isinstance(msg.content, str):
-            content = msg.content
-        else:
-            for block in msg.content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    content += block.get("text", "")
-                else:
-                    content += getattr(block, "text", "")
+        # გამარტივებული ვერსია პასუხის მიღების
+        content = resp.choices[0].message.content or ""
         return content
     except Exception as e:
         logging.exception("OpenAI API call failed")
@@ -173,7 +167,7 @@ async def handle_psychology(session: Dict[str, Any], user_text: str) -> str:
                     session["current_module"] = "general"
                     response_text = response_text.replace("[handoff]", "").strip()
                 return response_text
-        except Exception:
+        except Exception as e:
             logging.exception("Error calling remote psychology chat service; falling back to local model")
 
     history = session.setdefault("history", [])
@@ -199,31 +193,46 @@ async def chat(request: Request):
     Body: {"text": "...", "module": "...", "session_id": "..."}.
     If module is omitted, dispatcher determines the module itself.
     """
-    body = await request.json()
-    user_text = body.get("text", "")
-    forced_module = body.get("module")
-    session_id = body.get("session_id", "default")
+    try:
+        body = await request.json()
+        user_text = body.get("text", "")
+        forced_module = body.get("module")
+        session_id = body.get("session_id", "default")
 
-    if not user_text:
-        return JSONResponse(status_code=400, content={"error": "text field is required"})
+        if not user_text:
+            return JSONResponse(status_code=400, content={"error": "text field is required"})
 
-    session = session_state.setdefault(session_id, {"current_module": "general", "history": []})
-    session["id"] = session_id
+        # გასწორებული სესიის ინიციალიზაცია
+        session = session_state.setdefault(
+            session_id,
+            {"id": session_id, "current_module": "general", "history": []}
+        )
 
-    if forced_module:
-        module = forced_module
-    else:
-        module = session.get("current_module", "general")
-        if module == "general":
-            module = await detect_module(user_text)
+        logging.info(f"Processing message for session {session_id}")
+        logging.info(f"User text: {user_text}")
 
-    session["current_module"] = module
-    if module == "psychology":
-        assistant_text = await handle_psychology(session, user_text)
-    else:
-        assistant_text = await handle_general(session, user_text)
+        if forced_module:
+            module = forced_module
+        else:
+            module = session.get("current_module", "general")
+            logging.info(f"Current module: {module}")
+            if module == "general":
+                module = await detect_module(user_text)
+                logging.info(f"Detected module: {module}")
 
-    return {"module": module, "text": assistant_text}
+        session["current_module"] = module
+        logging.info(f"Routing to module: {module}")
+
+        if module == "psychology":
+            assistant_text = await handle_psychology(session, user_text)
+        else:
+            assistant_text = await handle_general(session, user_text)
+
+        return {"module": module, "text": assistant_text}
+
+    except Exception as e:
+        logging.exception("Error in chat endpoint")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 # ----------------------------------------------------------
 # Health check and static files
