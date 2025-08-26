@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ტერმინალი – Moonshot</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #000;
+      background-image: radial-gradient(#444 1px, transparent 1px),
+                        radial-gradient(#222 1px, transparent 1px);
+      background-size: 4px 4px, 6px 6px;
+      background-position: 0 0, 3px 3px;
+      color: #FFD700;
+      font-family: "Courier New", Courier, monospace;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #terminal {
+      width: 90%;
+      max-width: 800px;
+    }
+    #output {
+      white-space: pre-line;
+      line-height: 1.4;
+      margin-bottom: 1rem;
+      min-height: 40vh;
+      overflow-y: auto;
+    }
+    #input {
+      width: 100%;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: #FFD700;
+      font-size: 24px;
+      caret-color: #FFD700;
+    }
+    @media (max-width: 600px) {
+      #input {
+        font-size: 32px;
+      }
+      #output {
+        font-size: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="terminal">
+    <div id="output"></div>
+    <input id="input" type="text" autofocus autocomplete="off" />
+  </div>
+
+  <script>
+  /*
+   * Simple terminal‑style interface for interacting with the dispatcher.  A
+   * random session ID is generated per browser instance and sent with each
+   * request so that the server can track conversation state and trigger
+   * registration when appropriate.
+   */
+  const inputEl  = document.getElementById('input');
+  const outputEl = document.getElementById('output');
+
+  // Generate a pseudo‑random session ID on first load.  In a real
+  // application you might use cookies or localStorage to persist sessions.
+  const sessionId = Math.random().toString(36).substring(2, 10);
+
+  document.body.addEventListener('click', () => inputEl.focus());
+
+  function appendLine(text) {
+    outputEl.textContent += text + '\n';
+    outputEl.scrollTop = outputEl.scrollHeight;
+  }
+
+  async function send(message) {
+    appendLine('თქვენ: ' + message);
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: message, session_id: sessionId })
+      });
+      const data = await res.json();
+      if (data.error) {
+        appendLine('ბოტი: ' + data.error);
+      } else {
+        appendLine('ბოტი: ' + data.text);
+      }
+    } catch (err) {
+      appendLine('ბოტი: სერვერის შეცდომა: ' + err.message);
+    }
+  }
+
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const message = inputEl.value.trim();
+      if (message) {
+        send(message);
+        inputEl.value = '';
+      }
+    }
+  });
+  </script>
+</body>
+</html>
