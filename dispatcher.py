@@ -188,12 +188,16 @@ async def detect_module(session: Dict[str, Any], user_text: str) -> str:
     if re.search(r"(შესვლ|login|ავტორიზ|signin)", user_text or "", re.IGNORECASE):
         return "login"
 
-    # If the user is not registered and has already sent at least 3
-    # messages in the current session, trigger registration.
-    if not session.get("registered"):
-        message_count = sum(1 for m in session.get("history", []) if m["role"] == "user")
-        if message_count >= 3:
-            return "registration"
+        # If the user is not registered and has already sent at least 2
+        # messages in the current session, trigger registration.
+        # Previously, the assistant waited until 3 prior user messages were
+        # recorded (registration occurred on the 4th message).  Users found
+        # this threshold unintuitive, so we lower it to 2 to prompt
+        # registration on the 3rd message instead.
+        if not session.get("registered"):
+            message_count = sum(1 for m in session.get("history", []) if m["role"] == "user")
+            if message_count >= 2:
+                return "registration"
 
     # Explicit registration keywords override other detection.
     if REGISTRATION_KEYWORDS.search(user_text or ""):

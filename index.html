@@ -67,8 +67,13 @@
   const outputEl = document.getElementById('output');
 
   // Generate a pseudo‑random session ID on first load.  In a real
-  // application you might use cookies or localStorage to persist sessions.
-  const sessionId = Math.random().toString(36).substring(2, 10);
+  // Use localStorage to persist the session ID across page loads so that
+  // returning visitors can continue their conversation on the same session.
+  let sessionId = localStorage.getItem('sessionId');
+  if (!sessionId) {
+    sessionId = Math.random().toString(36).substring(2, 10);
+    localStorage.setItem('sessionId', sessionId);
+  }
 
   document.body.addEventListener('click', () => inputEl.focus());
 
