@@ -27,6 +27,9 @@ import os
 import re
 from typing import Dict, Any, List
 
+import bcrypt  # password hashing
+from sql_storage import init_db, upsert_user, get_user_hash, add_message, load_history  # sqlite storage helpers
+
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,16 +65,22 @@ PSYCH_SYSTEM_PROMPT = (
 )
 
 # The registration prompt instructs the model to handle the sign‑up flow.
+# Updated to collect only a username and password (email is no longer required).
 REGISTRATION_SYSTEM_PROMPT = (
     "შენ ხარ რეგისტრაციის ასისტენტი. "
-    "თუ მომხმარებელი ჯერ არ არის რეგისტრირებული, უნდა შეუსვა რამდენიმე კითხვა: "
-    "მომხმარებლის სახელი (username), ელფოსტა და პაროლი. თითოეულ შეკითხვაზე "
-    "უპასუხე ცალ-ცალკე – ჯერ კითხე სახელი, შემდეგ ელფოსტა, შემდეგ პაროლი. "
-    "როდესაც ყველა ინფორმაცია შეგროვებულია, დააბრუნე მოკლე ტექსტური პასუხი, "
-    "რომ რეგისტრაცია დასრულდა და JSON ობიექტი შემდეგ ფორმატში: "
-    "{\"username\":\"...\",\"email\":\"...\",\"password\":\"...\"} "
-    "და დაამატე მარკერი '[registration_complete]' ბოლოს ისე, რომ მომხმარებელმა "
-    "ამ მარკერის არსებობა ვერ დაინახოს."
+    "ჯერ ეკითხები მომხმარებელს მომხმარებლის სახელს (username), შემდეგ პაროლს. "
+    "თითო ნაბიჯზე ეკითხები მხოლოდ ერთ ველს. "
+    "როდესაც ორივე ინფორმაცია შეგროვდება, "
+    "დააბრუნე მოკლე ტექსტი \"რეგისტრაცია დასრულებულია\" და JSON:{\"username\":\"...\",\"password\":\"...\"} "
+    "და დაამატე მარკერი '[registration_complete]'."
+)
+
+# Login prompt for existing users.
+LOGIN_SYSTEM_PROMPT = (
+    "შენ ხარ ავტორიზაციის ასისტენტი. "
+    "ჯერ ეკითხები მომხმარებელს მომხმარებლის სახელს, შემდეგ პაროლს. "
+    "როდესაც ორივე მიიღებ, დააბრუნე JSON:{\"username\":\"...\",\"password\":\"...\"} "
+    "და დაამატე მარკერი '[login_complete]'."
 )
 
 # Regex patterns for detecting psychology and registration intents.
@@ -102,6 +111,9 @@ session_state: Dict[str, Dict[str, Any]] = {}
 
 # Simple in‑memory store for registered users.  Keys are usernames.
 users_db: Dict[str, Dict[str, Any]] = {}
+
+# Initialize SQLite database tables.
+init_db()
 
 def get_openai_client() -> AsyncOpenAI:
     """Instantiate a new asynchronous OpenAI client."""
@@ -172,6 +184,10 @@ async def detect_module(session: Dict[str, Any], user_text: str) -> str:
     3. Check for psychology keywords; if none found, use the LLM to
        classify.
     """
+    # Detect login intent first
+    if re.search(r"(შესვლ|login|ავტორიზ|signin)", user_text or "", re.IGNORECASE):
+        return "login"
+
     # If the user is not registered and has already sent at least 3
     # messages in the current session, trigger registration.
     if not session.get("registered"):
@@ -259,6 +275,54 @@ async def handle_psychology(session: Dict[str, Any], user_text: str) -> str:
         session["history"] = history[-40:]
     return response
 
+async def handle_login(session: Dict[str, Any], user_text: str) -> str:
+    """
+    Guide the user through login using the OpenAI model.  Upon completion,
+    verifies credentials and loads conversation history from the database.
+    """
+    history = session.setdefault("history", [])
+    messages = [
+        {"role": "system", "content": LOGIN_SYSTEM_PROMPT},
+        *history,
+        {"role": "user", "content": user_text},
+    ]
+    response = await call_openai_chat(messages)
+    # Update in-memory history
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": response})
+    # Check for completion marker
+    if "[login_complete]" in response:
+        match = re.search(r"\{.*\}", response)
+        if match:
+            try:
+                creds = json.loads(match.group())
+                username = creds.get("username")
+                password = creds.get("password")
+                if username and password:
+                    # Verify user credentials
+                    pw_hash = get_user_hash(username)
+                    if pw_hash and bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
+                        # Load conversation history from DB
+                        loaded = load_history(username)
+                        if loaded:
+                            session["history"] = [
+                                {"role": r, "content": c} for (r, c) in loaded
+                            ]
+                        session["registered"] = True
+                        session["user"] = username
+                        # Clean marker and JSON from response
+                        response = re.sub(r"\{.*\}", "", response)
+                        response = response.replace("[login_complete]", "").strip()
+                        return "შეხვედით სისტემაში. გავაგრძელოთ საუბარი."
+                    else:
+                        return "სახელი ან პაროლი არასწორია."
+            except Exception:
+                logging.exception("Failed to parse login JSON")
+        # Clean up on failure
+        response = re.sub(r"\{.*\}", "", response)
+        response = response.replace("[login_complete]", "").strip()
+    return response
+
 async def handle_registration(session: Dict[str, Any], user_text: str) -> str:
     """
     Guide the user through registration using the OpenAI model.  Stores
@@ -283,12 +347,20 @@ async def handle_registration(session: Dict[str, Any], user_text: str) -> str:
             try:
                 user_info = json.loads(match.group())
                 username = user_info.get("username")
-                if username:
-                    # Store user details; note: passwords are stored in plain
-                    # text here for demonstration only.  In production use
-                    # proper hashing (e.g. bcrypt).
-                    users_db[username] = user_info
+                password = user_info.get("password")
+                if username and password:
+                    # Hash password and upsert user into DB
+                    pw_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                    upsert_user(username, pw_hash)
+                    # Load any existing history from DB
+                    loaded = load_history(username)
+                    if loaded:
+                        session["history"] = [
+                            {"role": r, "content": c} for (r, c) in loaded
+                        ]
+                    # Mark session as registered and associate user
                     session["registered"] = True
+                    session["user"] = username
             except Exception:
                 logging.exception("Failed to parse registration JSON")
         # Clean the marker and JSON from the response before returning
@@ -328,6 +400,10 @@ async def chat(request: Request):
     session = session_state.setdefault(session_id, {"current_module": "general", "history": []})
     session["id"] = session_id
 
+    # Persist incoming user message for logged‑in users
+    if session.get("user"):
+        add_message(session["user"], "user", user_text)
+
     # Determine module: forced, session or detected
     if forced_module:
         module = forced_module
@@ -344,8 +420,14 @@ async def chat(request: Request):
         assistant_text = await handle_psychology(session, user_text)
     elif module == "registration":
         assistant_text = await handle_registration(session, user_text)
+    elif module == "login":
+        assistant_text = await handle_login(session, user_text)
     else:
         assistant_text = await handle_general(session, user_text)
+
+    # Persist assistant response for logged‑in users
+    if session.get("user") and assistant_text:
+        add_message(session["user"], "assistant", assistant_text)
 
     return {"module": module, "text": assistant_text}
 
@@ -353,6 +435,30 @@ async def chat(request: Request):
 async def health():
     """Simple health check endpoint."""
     return {"status": "ok"}
+
+@app.post("/login")
+async def login(request: Request):
+    """
+    Programmatic login endpoint.  Accepts JSON {"username":..., "password":..., "session_id":...}
+    Verifies credentials and loads history into the session.
+    """
+    data = await request.json()
+    username = data.get("username")
+    password = data.get("password")
+    session_id = data.get("session_id")
+    if not username or not password or not session_id:
+        return {"ok": False, "message": "მონაცემები არასრულია."}
+    pw_hash = get_user_hash(username)
+    if not pw_hash or not bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
+        return {"ok": False, "message": "სახელი ან პაროლი არასწორია."}
+    session = session_state.setdefault(session_id, {"current_module": "general", "history": []})
+    loaded = load_history(username)
+    session["history"] = [
+        {"role": r, "content": c} for (r, c) in loaded
+    ] if loaded else []
+    session["registered"] = True
+    session["user"] = username
+    return {"ok": True, "message": "შეხვედით სისტემაში."}
 
 # Mount the static frontend if available.  Fail silently if directory is missing.
 try:
