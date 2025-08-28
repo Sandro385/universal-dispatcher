@@ -3,7 +3,14 @@ import sqlite3
 from typing import List, Tuple, Optional
 
 # SQLite database path (can be overridden via environment variable)
-DB_PATH = os.getenv("DB_PATH", "data.db")
+#
+# In production environments like Render, the working directory may be
+# read‑only, causing attempts to create a SQLite database in the root
+# directory (e.g. `data.db`) to fail with an `OperationalError`.
+# To avoid this, default to a location under `/tmp`, which is
+# typically writable in containerised platforms.  You can override
+# this by setting the `DB_PATH` environment variable.
+DB_PATH = os.getenv("DB_PATH", "/tmp/data.db")
 
 
 def connect() -> sqlite3.Connection:
