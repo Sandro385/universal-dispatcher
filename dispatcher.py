@@ -84,8 +84,12 @@ LOGIN_SYSTEM_PROMPT = (
 )
 
 # Regex patterns for detecting psychology and registration intents.
+# Keywords used to detect psychology‑related intents.  We expand the list to
+# cover common Georgian and English therapy terms (e.g. მკურნალობის, მეთოდი)
+# and visual/CBT references.  This helps route queries like "რა მეთოდით მკურნალობ" to
+# the psychology module without relying solely on LLM classification.
 PSYCH_KEYWORDS = re.compile(
-    r"ფსიქ|თერაპ|პსიქ|დეპრეს|depress|anxiety|therapy|psych", re.IGNORECASE
+    r"ფსიქ|თერაპ|პსიქ|დეპრეს|depress|anxiety|therapy|psych|მკურნალ|მეთოდ|visual|CBT|კოგნიტ", re.IGNORECASE
 )
 REGISTRATION_KEYWORDS = re.compile(r"რეგისტ|register|sign\s*up", re.IGNORECASE)
 
@@ -212,7 +216,8 @@ async def detect_module(session: Dict[str, Any], user_text: str) -> str:
 
     # Otherwise consult the model to estimate probability.
     probability = await classify_intent_via_llm(user_text or "")
-    return "psychology" if probability >= 0.3 else "general"
+    # Lower the threshold slightly to increase sensitivity to mental health topics
+    return "psychology" if probability >= 0.2 else "general"
 
 ###############################################################################
 # Module handlers
@@ -297,19 +302,19 @@ async def handle_login(session: Dict[str, Any], user_text: str) -> str:
     # Update in-memory history
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": response})
-    # Check for completion marker
+    # Check for completion marker and handle login credentials
     if "[login_complete]" in response:
-        match = re.search(r"\{.*\}", response)
+        # Attempt to extract the JSON payload from the model's reply
+        match = re.search(r"\{.*?\}", response)
         if match:
             try:
                 creds = json.loads(match.group())
                 username = creds.get("username")
                 password = creds.get("password")
                 if username and password:
-                    # Verify user credentials
                     pw_hash = get_user_hash(username)
                     if pw_hash and bcrypt.checkpw(password.encode("utf-8"), pw_hash.encode("utf-8")):
-                        # Load conversation history from DB
+                        # Load conversation history from DB and update session
                         loaded = load_history(username)
                         if loaded:
                             session["history"] = [
@@ -317,16 +322,27 @@ async def handle_login(session: Dict[str, Any], user_text: str) -> str:
                             ]
                         session["registered"] = True
                         session["user"] = username
-                        # Clean marker and JSON from response
-                        response = re.sub(r"\{.*\}", "", response)
+                        # Remove any JSON payload and 'JSON:' label from the model's response
+                        response = re.sub(r"JSON\s*:.*?\}\s*", "", response, flags=re.S)
+                        response = re.sub(r"\{.*?\}", "", response, flags=re.S)
                         response = response.replace("[login_complete]", "").strip()
-                        return "შეხვედით სისტემაში. გავაგრძელოთ საუბარი."
+                        # Build a human‑friendly message including prior conversation if available
+                        if session.get("history"):
+                            lines = []
+                            for msg in session["history"]:
+                                prefix = "თქვენ:" if msg["role"] == "user" else "ბოტი:"
+                                lines.append(f"{prefix} {msg['content']}")
+                            history_str = "\n".join(lines)
+                            return f"შეხვედით სისტემაში. აი თქვენი წინა საუბარი:\n{history_str}"
+                        else:
+                            return "შეხვედით სისტემაში. გავაგრძელოთ საუბარი."
                     else:
                         return "სახელი ან პაროლი არასწორია."
             except Exception:
                 logging.exception("Failed to parse login JSON")
-        # Clean up on failure
-        response = re.sub(r"\{.*\}", "", response)
+        # On failure to parse or authenticate, remove any JSON and marker from the reply
+        response = re.sub(r"JSON\s*:.*?\}\s*", "", response, flags=re.S)
+        response = re.sub(r"\{.*?\}", "", response, flags=re.S)
         response = response.replace("[login_complete]", "").strip()
     return response
 
@@ -370,8 +386,12 @@ async def handle_registration(session: Dict[str, Any], user_text: str) -> str:
                     session["user"] = username
             except Exception:
                 logging.exception("Failed to parse registration JSON")
-        # Clean the marker and JSON from the response before returning
-        response = re.sub(r"\{.*\}", "", response)
+        # Clean the marker and any JSON and 'JSON:' label from the response before returning
+        # Remove 'JSON:' label plus the JSON block if present
+        response = re.sub(r"JSON\s*:.*?\}\s*", "", response, flags=re.S)
+        # Remove any remaining JSON object for safety
+        response = re.sub(r"\{.*?\}", "", response, flags=re.S)
+        # Remove the completion marker
         response = response.replace("[registration_complete]", "").strip()
         # After registration, switch back to general conversation
         session["current_module"] = "general"
