@@ -1,24 +1,40 @@
 """
-Extended dispatcher service with built‑in registration flow.
+Extended dispatcher service with built‑in registration and login flows.
 
-This module wraps the original universal‑dispatcher functionality and
-introduces a new conversational registration assistant.  The service
-switches the user into a registration mode when the user has not yet
-registered and has interacted with the assistant beyond a few messages.
+This module builds on top of the original universal‑dispatcher and adds
+stateful registration and authentication.  The dispatcher will
+automatically prompt unregistered users for basic account details after
+a few messages and then return to normal conversation once sign‑up is
+complete.  Registered users can later log in to restore their prior
+conversation history.
 
 Key features:
 
-* **General assistant** – handles everyday questions via an OpenAI model.
-* **Psychology assistant** – routes to a dedicated psychological model when
-  therapeutic topics are detected via keyword or LLM intent classification.
-* **Registration assistant** – automatically prompts the user for basic
-  account details (username, email and password) and stores them in a
-  simple in‑memory user store.  Once registration is complete, the
-  session is marked as registered and subsequent messages are routed back
-  to the general assistant.
+* **General assistant** – handles everyday questions using the Moonshot
+  chat model when a ``MOONSHOT_API_KEY`` is configured.  If Moonshot is
+  not available, the dispatcher falls back to OpenAI's chat model.  The
+  assistant speaks Georgian and keeps answers concise and professional.
+* **Psychology assistant** – when therapeutic topics are detected via
+  keyword matching or LLM intent classification, requests are routed to
+  a dedicated remote psychology service provided via the ``PSYCH_CHAT_URL``
+  environment variable.  If no remote service is configured the
+  dispatcher falls back to the OpenAI backend (using the model defined
+  by ``OPENAI_MODEL``), even when Moonshot is available, to ensure
+  psychological conversations use a separate model from the general
+  assistant.
+* **Registration assistant** – automatically prompts the user for a
+  username and password (email is no longer required).  Credentials are
+  hashed with bcrypt and stored in a SQLite database.  Once
+  registration is complete, the session is marked as registered and
+  subsequent messages are routed back to the general assistant.
+* **Login assistant** – supports logging in existing users by prompting
+  for username and password and restoring the full conversation
+  history from the database.
 
-To run this service you must set the ``OPENAI_API_KEY`` environment
-variable.  See README for installation instructions.
+To run this service you must set either the ``MOONSHOT_API_KEY`` or
+``OPENAI_API_KEY`` environment variable.  The optional
+``PSYCH_CHAT_URL`` may be used to integrate with a specialised
+psychology chat backend.  See the README for installation instructions.
 """
 
 import json
@@ -42,10 +58,24 @@ from openai import AsyncOpenAI
 ###############################################################################
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Default OpenAI model to GPT-4o dated 2024-05-13.  This ensures that
+# psychology fallbacks use the correct version of the OpenAI model.  If you
+# wish to override this value, set the OPENAI_MODEL environment variable.
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-2024-05-13")
+
+# Moonshot configuration.  If a Moonshot API key is provided, the dispatcher
+# will use Moonshot as the default LLM backend for general conversation,
+# registration and login flows.  You can override the API base URL and
+# model via the environment.  When Moonshot is not configured, the
+# dispatcher falls back to OpenAI for all conversation flows.
+MOONSHOT_API_KEY = os.getenv("MOONSHOT_API_KEY")
+MOONSHOT_API_URL = os.getenv("MOONSHOT_API_URL", "https://api.moonshot.ai/v1/chat/completions")
+MOONSHOT_MODEL = os.getenv("MOONSHOT_MODEL", "kimi-k2-turbo-preview")
 
 if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY env variable is required")
+    # We only require OPENAI_API_KEY when Moonshot is not configured.
+    if not MOONSHOT_API_KEY:
+        raise RuntimeError("Either OPENAI_API_KEY or MOONSHOT_API_KEY env variable must be set")
 
 # System prompts define high‑level behaviour for each assistant.
 GENERAL_SYSTEM_PROMPT = (
@@ -123,6 +153,43 @@ def get_openai_client() -> AsyncOpenAI:
     """Instantiate a new asynchronous OpenAI client."""
     return AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+async def call_moonshot_chat(messages: List[Dict[str, str]]) -> str:
+    """
+    Send messages to the Moonshot chat completion API and return the text.
+
+    Moonshot's API is largely compatible with OpenAI's chat API.  We post a
+    payload containing the model name and message list to the configured
+    endpoint.  The API key must be set in the Authorization header.
+    """
+    if not MOONSHOT_API_KEY:
+        raise RuntimeError("MOONSHOT_API_KEY is required to call Moonshot API")
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = {
+                "model": MOONSHOT_MODEL,
+                "messages": messages,
+                "max_tokens": 800,
+                "temperature": 0.7,
+            }
+            headers = {
+                "Authorization": f"Bearer {MOONSHOT_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            resp = await client.post(MOONSHOT_API_URL, json=payload, headers=headers, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            # Moonshot returns a structure similar to OpenAI's: {'choices': [{'message': {'content': ...}}]}
+            try:
+                return data["choices"][0]["message"]["content"]
+            except Exception:
+                # Fallback: attempt to extract first available string content
+                if isinstance(data, dict):
+                    return json.dumps(data)
+                return str(data)
+    except Exception as e:
+        logging.exception("Moonshot API call failed")
+        return f"ხარვეზი მოხდა: {e}"
+
 async def call_openai_chat(messages: List[Dict[str, str]]) -> str:
     """Send messages to the OpenAI chat completion API and return the text."""
     client = get_openai_client()
@@ -168,7 +235,14 @@ async def classify_intent_via_llm(text: str) -> float:
         {"role": "system", "content": classification_prompt},
         {"role": "user", "content": text},
     ]
-    response = await call_openai_chat(messages)
+    # Use OpenAI for intent classification when available; otherwise fallback to Moonshot.
+    if OPENAI_API_KEY:
+        response = await call_openai_chat(messages)
+    elif MOONSHOT_API_KEY:
+        response = await call_moonshot_chat(messages)
+    else:
+        # No LLM backend available
+        return 0.0
     try:
         match = re.search(r"0(?:\.\d+)?|1(?:\.0+)?", response)
         if match:
@@ -234,7 +308,11 @@ async def handle_general(session: Dict[str, Any], user_text: str) -> str:
         *history,
         {"role": "user", "content": user_text},
     ]
-    response = await call_openai_chat(messages)
+    # Use Moonshot for general conversation if configured, otherwise fallback to OpenAI
+    if MOONSHOT_API_KEY:
+        response = await call_moonshot_chat(messages)
+    else:
+        response = await call_openai_chat(messages)
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": response})
     # Keep only the last 40 messages to limit context size
@@ -271,12 +349,18 @@ async def handle_psychology(session: Dict[str, Any], user_text: str) -> str:
         except Exception:
             logging.exception("Error calling remote psychology chat service; falling back to local model")
 
-    # Fallback to local model
+    # Fallback to a local LLM when no remote psychology service is configured.
+    # For psychological conversations we deliberately prefer the OpenAI model
+    # (e.g. GPT-4o) rather than Moonshot, even if Moonshot is available.  This
+    # allows the psychology assistant to use a different model than the
+    # general assistant.  You can override the model via the OPENAI_MODEL
+    # environment variable.
     messages = [
         {"role": "system", "content": PSYCH_SYSTEM_PROMPT},
         *history,
         {"role": "user", "content": user_text},
     ]
+    # Always use the OpenAI backend for psychology fallback.
     response = await call_openai_chat(messages)
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": response})
@@ -298,7 +382,11 @@ async def handle_login(session: Dict[str, Any], user_text: str) -> str:
         *history,
         {"role": "user", "content": user_text},
     ]
-    response = await call_openai_chat(messages)
+    # Use Moonshot for login flow if configured, otherwise fallback to OpenAI
+    if MOONSHOT_API_KEY:
+        response = await call_moonshot_chat(messages)
+    else:
+        response = await call_openai_chat(messages)
     # Update in-memory history
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": response})
@@ -359,7 +447,11 @@ async def handle_registration(session: Dict[str, Any], user_text: str) -> str:
         *history,
         {"role": "user", "content": user_text},
     ]
-    response = await call_openai_chat(messages)
+    # Use Moonshot for registration flow if configured, otherwise fallback to OpenAI
+    if MOONSHOT_API_KEY:
+        response = await call_moonshot_chat(messages)
+    else:
+        response = await call_openai_chat(messages)
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": response})
     # Detect completion marker and extract JSON payload
