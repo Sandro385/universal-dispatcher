@@ -14,14 +14,15 @@ Key features:
   chat model when a ``MOONSHOT_API_KEY`` is configured.  If Moonshot is
   not available, the dispatcher falls back to OpenAI's chat model.  The
   assistant speaks Georgian and keeps answers concise and professional.
-* **Psychology assistant** – when therapeutic topics are detected via
-  keyword matching or LLM intent classification, requests are routed to
-  a dedicated remote psychology service provided via the ``PSYCH_CHAT_URL``
-  environment variable.  If no remote service is configured the
-  dispatcher falls back to the OpenAI backend (using the model defined
-  by ``OPENAI_MODEL``), even when Moonshot is available, to ensure
-  psychological conversations use a separate model from the general
-  assistant.
+    * **Psychology assistant** – when therapeutic topics are detected via
+      keyword matching or LLM intent classification, requests are routed to
+      a dedicated remote psychology service provided via the ``PSYCH_CHAT_URL``
+      environment variable.  If no remote service is configured the
+      dispatcher falls back to a specialised OpenAI assistant.  The ID of
+      this assistant is defined by ``PSYCH_ASSISTANT_ID`` (defaulting to
+      ``asst_nZlOLl89ez21FOcMNCejGj47``) and may be overridden via the
+      environment.  This ensures psychological conversations use a different
+      model from the general assistant, even when Moonshot is available.
 * **Registration assistant** – automatically prompts the user for a
   username and password (email is no longer required).  Credentials are
   hashed with bcrypt and stored in a SQLite database.  Once
@@ -62,6 +63,15 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # psychology fallbacks use the correct version of the OpenAI model.  If you
 # wish to override this value, set the OPENAI_MODEL environment variable.
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-2024-05-13")
+
+# Psychology assistant ID. When set, this value is used as the model name
+# for fallback psychology conversations. By default we point at the
+# customer-provided OpenAI assistant ID which encapsulates the specialised
+# psychology behaviour.  If you wish to override this value, set
+# ``PSYCH_ASSISTANT_ID`` in the environment.  Note that this ID must refer
+# to an Assistant that is compatible with the chat/completions API.  See
+# OpenAI's documentation for more details.
+PSYCH_ASSISTANT_ID = os.getenv("PSYCH_ASSISTANT_ID", "asst_nZlOLl89ez21FOcMNCejGj47")
 
 # Moonshot configuration.  If a Moonshot API key is provided, the dispatcher
 # will use Moonshot as the default LLM backend for general conversation,
@@ -214,6 +224,51 @@ async def call_openai_chat(messages: List[Dict[str, str]]) -> str:
         return content
     except Exception as e:
         logging.exception("OpenAI API call failed")
+        return f"ხარვეზი მოხდა: {e}"
+
+
+async def call_openai_psych_chat(messages: List[Dict[str, str]]) -> str:
+    """
+    Send messages to the OpenAI chat completion API using the psychology
+    assistant model.  This function mirrors ``call_openai_chat`` but
+    explicitly uses the assistant ID defined by ``PSYCH_ASSISTANT_ID``
+    instead of the general ``OPENAI_MODEL``.  It allows psychology
+    conversations to be routed to a specialised assistant without
+    affecting the general assistant flow.
+
+    Parameters
+    ----------
+    messages: List[Dict[str, str]]
+        The conversation history formatted for the chat/completions API.
+
+    Returns
+    -------
+    str
+        The assistant's response content.  In the event of an error the
+        exception message is returned to the user and logged server-side.
+    """
+    client = get_openai_client()
+    try:
+        resp = await client.chat.completions.create(
+            model=PSYCH_ASSISTANT_ID,
+            messages=messages,
+            max_tokens=800,
+            temperature=0.7,
+        )
+        msg = resp.choices[0].message
+        content: str = ""
+        if isinstance(msg.content, str):
+            content = msg.content
+        else:
+            # Support streaming responses containing content blocks
+            for block in msg.content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    content += block.get("text", "")
+                else:
+                    content += getattr(block, "text", "")
+        return content
+    except Exception as e:
+        logging.exception("OpenAI psychology assistant call failed")
         return f"ხარვეზი მოხდა: {e}"
 
 ###############################################################################
@@ -386,7 +441,9 @@ async def handle_login(session: Dict[str, Any], user_text: str) -> str:
     if MOONSHOT_API_KEY:
         response = await call_moonshot_chat(messages)
     else:
-        response = await call_openai_chat(messages)
+        # Use the specialised psychology assistant when configured.  This
+        # passes the assistant ID as the model to the chat/completions API.
+        response = await call_openai_psych_chat(messages)
     # Update in-memory history
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": response})
